@@ -10,13 +10,14 @@ def read_data(file_path):
     """Reads CSV data from the given file path."""
     return pd.read_csv(file_path + "\\metadata.csv").set_index("SampleID"), pd.read_csv(file_path + "\\microbiome.csv").set_index("SampleID"), pd.read_csv(file_path + "\\serum_lipo.csv").set_index("SampleID")
 
-def preprocess_data(metadata_df, microbiome_df):
+def preprocess_data(metadata_df, microbiome_df, serum_lipo_df):
     """Preprocesses the data by handling missing values and normalizing."""
     # Example preprocessing steps
     ret_metadata = metadata_df.fillna(-1)  # Fill missing values with -1
     ret_metadata["disease_status"] = np.where(ret_metadata["PATGROUPFINAL_C"] == "8", 0, 1)  # Binary encoding of disease status
     ret_microbiome_df = microbiome_df.div(microbiome_df.sum(axis=1), axis=0)  # Convert to relative abundances
-    return ret_metadata, ret_microbiome_df
+    ret_serum_lipo_df = serum_lipo_df.div(serum_lipo_df.sum(axis=1), axis=0)  # Convert to relative abundances
+    return ret_metadata, ret_microbiome_df, ret_serum_lipo_df
 
 def train_model(train_df, target_column):
     """Trains a Random Forest model."""
@@ -48,21 +49,25 @@ def evaluate_model(model, test_df, target_column):
 
 if __name__ == "__main__":
     metadata_df, microbiome_df, serum_lipo_df = read_data(".\\train")
-    filled_metadata_df, normalized_microbiome_df = preprocess_data(metadata_df, microbiome_df)
+    filled_metadata_df, normalized_microbiome_df, normalized_serum_lipo_df = preprocess_data(metadata_df, microbiome_df, serum_lipo_df)
 
     target_column = "disease_status"
     microbiome_model_data = microbiome_df.join(filled_metadata_df[[target_column]], how="inner")
     normalized_microbiome_model_data = normalized_microbiome_df.join(filled_metadata_df[[target_column]], how="inner")
     metabolome_added_model_data = normalized_microbiome_model_data.join(serum_lipo_df, how="inner")
+    normalized_metabolome_added_model_data = normalized_microbiome_df.join(normalized_serum_lipo_df, how="inner").join(filled_metadata_df[[target_column]], how="inner")
 
     microbiome_train, microbiome_test = train_test_split(microbiome_model_data, test_size=0.2, random_state=42, stratify=microbiome_model_data[target_column])
     normalized_microbiome_train, normalized_microbiome_test = train_test_split(normalized_microbiome_model_data, test_size=0.2, random_state=42, stratify=normalized_microbiome_model_data[target_column])
     metabolome_added_train, metabolome_added_test = train_test_split(metabolome_added_model_data, test_size=0.2, random_state=42, stratify=metabolome_added_model_data[target_column])
+    normalized_metabolome_added_train, normalized_metabolome_added_test = train_test_split(normalized_metabolome_added_model_data, test_size=0.2, random_state=42, stratify=normalized_metabolome_added_model_data[target_column])
 
     microbiome_model = train_model(microbiome_train, target_column)
     normalized_microbiome_model = train_model(normalized_microbiome_train, target_column)
     metabolome_added_model = train_model(metabolome_added_train, target_column)
+    normalized_metabolome_added_model = train_model(normalized_metabolome_added_train, target_column)
 
     evaluate_model(microbiome_model, microbiome_test, target_column)
     evaluate_model(normalized_microbiome_model, normalized_microbiome_test, target_column)
     evaluate_model(metabolome_added_model, metabolome_added_test, target_column)
+    evaluate_model(normalized_metabolome_added_model, normalized_metabolome_added_test, target_column)
