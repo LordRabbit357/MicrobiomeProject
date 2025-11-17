@@ -3,3 +3,5 @@ lectures/*
 output.csv
 train.zip
 misc/
+*.gz
+*.tab
