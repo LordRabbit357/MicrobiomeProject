@@ -1,5 +1,11 @@
 import pandas as pd
+import numpy as np
 from ete3 import NCBITaxa
+import cobra
+import warnings
+from pathlib import Path
+import requests
+from biotite.sequence.phylo import upgma
 
 def load_gtdb_metadata(metadata_path):
     """
@@ -76,31 +82,120 @@ def get_species_taxid(strain_taxid):
     # No species found in lineage
     return None
 
+def download_model(filename, path_to_models):
+    """
+    Download an SBML model from the Agora repository.
+    """
+    Path(path_to_models).mkdir(parents=True, exist_ok=True)
+    file_url = f"https://www.vmh.life/files/reconstructions/AGORA/1.03/reconstructions/sbml/{filename}.xml"
+    try:
+        # Send a GET request to the URL
+        response = requests.get(file_url, stream=True)
+        response.raise_for_status()  # Raise an HTTPError for bad responses (4xx or 5xx)
+
+        # Open the local file in binary write mode
+        with open(f"{path_to_models}{filename}.xml", "wb") as f:
+            # Iterate over the response content in chunks to handle large files efficiently
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        print(f"File '{filename}.xml' downloaded successfully.")
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading file: {e}")
+        return False
+    return True
+
+def get_strain_reactinos(strain_name, path_to_models="models/"):
+    """
+    Load an SBML model for a given strain name and return its reactions.
+    Assumes models are stored in SBML format in the specified directory.
+    """
+    strain_filename = strain_name.strip().replace(' ', '_').replace('.', '').replace('-', '_').replace(',', '_').replace('/', '_').replace('(', '').replace(')', '').replace(":", "_").replace("__", "_")
+    if "=" in strain_filename:
+        strain_filename = strain_filename.split('=')[0]
+        strain_filename = strain_filename.rstrip('_')
+    model_path = f"{path_to_models}{strain_filename}.xml"
+    path_object = Path(model_path)
+
+    if not path_object.is_file():
+        if not download_model(strain_filename, path_to_models):
+            print(f"Failed to download model for strain: {strain_name}")
+            return None
+
+    try:
+        model = cobra.io.read_sbml_model(model_path)
+        return model.reactions
+    except FileNotFoundError:
+        print(f"Model file not found for strain: {strain_name}")
+        return None
+    
+def jaccard_index(set1, set2):
+    """
+    Compute the Jaccard index between two sets.
+    J(A, B) = |A ∩ B| / |A ∪ B|
+    """
+    intersection = len(set1.intersection(set2))
+    union = len(set1.union(set2))
+    if union == 0:
+        return 0.0
+    return intersection / union
+
 
 if __name__ == "__main__":
-    metadata_path = "bac120_metadata_r207.tsv"
+    # # Ignore all UserWarnings
+    # warnings.filterwarnings('ignore', category=UserWarning)
+    
+    # metadata_path = "bac120_metadata_r207.tsv"
 
-    gtdb_species_list = pd.read_csv("train/microbiome.csv").set_index("SampleID").columns.tolist()
+    # gtdb_species_list = pd.read_csv("train/microbiome.csv").set_index("SampleID").columns.tolist()
 
-    # Load metadata and build mapping
-    metadata_df = load_gtdb_metadata(metadata_path)
-    species_to_ncbi = build_species_to_ncbi_map(metadata_df)
+    # # Load metadata and build mapping
+    # metadata_df = load_gtdb_metadata(metadata_path)
+    # species_to_ncbi = build_species_to_ncbi_map(metadata_df)
 
-    # Convert GTDB → NCBI
-    converted = convert_species_list(gtdb_species_list, species_to_ncbi)
+    # # Convert GTDB → NCBI
+    # converted = convert_species_list(gtdb_species_list, species_to_ncbi)
 
-    agora_organisms = pd.read_csv("vmh_species.tsv", sep="\t")
+    # print(f"Number of GTDB species converted: {len(converted)}")
 
-    species_to_strains = {}
+    # agora_organisms = pd.read_csv("vmh_species.tsv", sep="\t")
+
+    # species_to_strains = {}
 
 
-    agora_strains = agora_organisms["ncbiid"].dropna().astype(int).tolist()
-    for strain in agora_strains:
-        species_taxid = get_species_taxid(strain)
-        if species_taxid is not None:
-            species_to_strains.setdefault(species_taxid, []).append(strain)
+    # agora_strains = agora_organisms["ncbiid"].dropna().astype(int).tolist()
+    # print(f"Number of Agora strains: {len(agora_strains)}")
+    # for strain in agora_strains:
+    #     species_taxid = get_species_taxid(strain)
+    #     if species_taxid is not None:
+    #         species_to_strains.setdefault(species_taxid, []).append(strain)
 
-    # Print results
-    for sp, taxid in converted.items():
-        if taxid is not None and taxid in species_to_strains:
-            print(f"{sp} → {taxid} -> {species_to_strains[taxid]}")
+    
+
+    # species_to_strains = {sp: agora_organisms[agora_organisms["ncbiid"].isin(species_to_strains[taxid])]["organism"].astype(str).tolist()
+    #                        for sp, taxid in converted.items() if taxid in species_to_strains}
+
+    # print(f"Number of GTDB species with strains in Agora: {len(species_to_strains)}")
+
+    # species_to_reactions = {}
+    # for sp, strains in species_to_strains.items():
+    #     reactions = set()
+    #     for strain in strains:
+    #         strain_reactions = get_strain_reactinos(strain)
+    #         if strain_reactions is not None:
+    #             reactions.update([rxn.id for rxn in strain_reactions])
+    #     species_to_reactions[sp] = reactions
+
+    # distance_matrix = pd.DataFrame(index=species_to_reactions.keys(), columns=species_to_reactions.keys(), dtype=float)
+    # for sp1, reactions1 in species_to_reactions.items():
+    #     for sp2, reactions2 in species_to_reactions.items():
+    #         distance_matrix.at[sp1, sp2] = 1-jaccard_index(reactions1, reactions2)
+
+    # distance_matrix.to_csv("species_distance_matrix.csv")
+    distance_matrix = pd.read_csv("species_distance_matrix.csv", index_col=0)
+
+    print("Distance matrix computed, Building UPGMA tree...")
+    tree = upgma(distance_matrix.to_numpy())
+
+    with open("species_upgma_tree.nwk", "w") as f:
+        f.write(tree.to_newick(include_distance=True))
