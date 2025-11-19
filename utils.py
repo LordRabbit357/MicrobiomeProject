@@ -198,7 +198,7 @@ if __name__ == "__main__":
     tree = upgma(distance_matrix.to_numpy())
     newick_string = tree.to_newick(include_distance=True)
     for sp in distance_matrix.index:
-        newick_string = newick_string.replace(f"({distance_matrix.index.get_loc(sp)}:", f"({sp}:").replace(f",{distance_matrix.index.get_loc(sp)}:", f",{sp}:")
+        newick_string = newick_string.replace(f"({distance_matrix.index.get_loc(sp)}:", f"(\'{sp}\':").replace(f",{distance_matrix.index.get_loc(sp)}:", f",\'{sp}\':")
 
     with open("species_upgma_tree.nwk", "w") as f:
         f.write(newick_string)
