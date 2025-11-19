@@ -85,7 +85,7 @@ if __name__ == "__main__":
 
     microbiome_model_data = sample_data_balanced(microbiome_model_data[microbiome_model_data["disease_status"] == 0],
                                                     microbiome_model_data[microbiome_model_data["disease_status"] == 1],
-                                                    xy_ratio=0.5, n_samples=500, random_state=42)
+                                                    xy_ratio=0.5, n_samples=5000, random_state=42)
     
     microbiome_naive_data = microbiome_model_data.copy()
 

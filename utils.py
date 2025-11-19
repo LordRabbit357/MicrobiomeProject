@@ -54,7 +54,7 @@ def convert_species_list(species_list, species_to_ncbi):
     result = {}
     for sp in species_list:
         key = sp if sp.startswith("s__") else f"s__{sp}"
-        result[sp] = species_to_ncbi.get(key, None)
+        result[sp] = get_species_taxid(species_to_ncbi.get(key, None)) if key in species_to_ncbi else None
     return result
 
 
@@ -142,56 +142,56 @@ def jaccard_index(set1, set2):
 
 
 if __name__ == "__main__":
-    # # Ignore all UserWarnings
-    # warnings.filterwarnings('ignore', category=UserWarning)
+    # Ignore all UserWarnings
+    warnings.filterwarnings('ignore', category=UserWarning)
     
-    # metadata_path = "bac120_metadata_r207.tsv"
+    metadata_path = "bac120_metadata_r207.tsv"
 
-    # gtdb_species_list = pd.read_csv("train/microbiome.csv").set_index("SampleID").columns.tolist()
+    gtdb_species_list = pd.read_csv("train/microbiome.csv").set_index("SampleID").columns.tolist()
 
-    # # Load metadata and build mapping
-    # metadata_df = load_gtdb_metadata(metadata_path)
-    # species_to_ncbi = build_species_to_ncbi_map(metadata_df)
+    # Load metadata and build mapping
+    metadata_df = load_gtdb_metadata(metadata_path)
+    species_to_ncbi = build_species_to_ncbi_map(metadata_df)
 
-    # # Convert GTDB → NCBI
-    # converted = convert_species_list(gtdb_species_list, species_to_ncbi)
+    # Convert GTDB → NCBI
+    converted = convert_species_list(gtdb_species_list, species_to_ncbi)
 
-    # print(f"Number of GTDB species converted: {len(converted)}")
+    print(f"Number of GTDB species converted: {len(converted)}")
 
-    # agora_organisms = pd.read_csv("vmh_species.tsv", sep="\t")
+    agora_organisms = pd.read_csv("vmh_species.tsv", sep="\t")
 
-    # species_to_strains = {}
+    species_to_strains = {}
 
 
-    # agora_strains = agora_organisms["ncbiid"].dropna().astype(int).tolist()
-    # print(f"Number of Agora strains: {len(agora_strains)}")
-    # for strain in agora_strains:
-    #     species_taxid = get_species_taxid(strain)
-    #     if species_taxid is not None:
-    #         species_to_strains.setdefault(species_taxid, []).append(strain)
+    agora_strains = agora_organisms["ncbiid"].dropna().astype(int).tolist()
+    print(f"Number of Agora strains: {len(agora_strains)}")
+    for strain in agora_strains:
+        species_taxid = get_species_taxid(strain)
+        if species_taxid is not None:
+            species_to_strains.setdefault(species_taxid, []).append(strain)
 
     
 
-    # species_to_strains = {sp: agora_organisms[agora_organisms["ncbiid"].isin(species_to_strains[taxid])]["organism"].astype(str).tolist()
-    #                        for sp, taxid in converted.items() if taxid in species_to_strains}
+    species_to_strains = {sp: agora_organisms[agora_organisms["ncbiid"].isin(species_to_strains[taxid])]["organism"].astype(str).tolist()
+                           for sp, taxid in converted.items() if taxid in species_to_strains}
 
-    # print(f"Number of GTDB species with strains in Agora: {len(species_to_strains)}")
+    print(f"Number of GTDB species with strains in Agora: {len(species_to_strains)}")
 
-    # species_to_reactions = {}
-    # for sp, strains in species_to_strains.items():
-    #     reactions = set()
-    #     for strain in strains:
-    #         strain_reactions = get_strain_reactinos(strain)
-    #         if strain_reactions is not None:
-    #             reactions.update([rxn.id for rxn in strain_reactions])
-    #     species_to_reactions[sp] = reactions
+    species_to_reactions = {}
+    for sp, strains in species_to_strains.items():
+        reactions = set()
+        for strain in strains:
+            strain_reactions = get_strain_reactinos(strain)
+            if strain_reactions is not None:
+                reactions.update([rxn.id for rxn in strain_reactions])
+        species_to_reactions[sp] = reactions
 
-    # distance_matrix = pd.DataFrame(index=species_to_reactions.keys(), columns=species_to_reactions.keys(), dtype=float)
-    # for sp1, reactions1 in species_to_reactions.items():
-    #     for sp2, reactions2 in species_to_reactions.items():
-    #         distance_matrix.at[sp1, sp2] = 1-jaccard_index(reactions1, reactions2)
+    distance_matrix = pd.DataFrame(index=species_to_reactions.keys(), columns=species_to_reactions.keys(), dtype=float)
+    for sp1, reactions1 in species_to_reactions.items():
+        for sp2, reactions2 in species_to_reactions.items():
+            distance_matrix.at[sp1, sp2] = 1-jaccard_index(reactions1, reactions2)
 
-    # distance_matrix.to_csv("species_distance_matrix.csv")
+    distance_matrix.to_csv("species_distance_matrix.csv")
     distance_matrix = pd.read_csv("species_distance_matrix.csv", index_col=0)
 
     print("Distance matrix computed, Building UPGMA tree...")
