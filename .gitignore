@@ -4,6 +4,10 @@ output.csv
 train.zip
 misc/
 models/
+__pycache__/
 *.gz
 *.tab
+*.nwk
+*.pkl
+*.png
 bac120_metadata_r207.tsv

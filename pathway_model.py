@@ -7,6 +7,13 @@ from sklearn.metrics import precision_recall_curve, average_precision_score
 import matplotlib.pyplot as plt
 from Bio import Phylo
 import math
+import random
+
+NUM_SAMPLES = 500
+RATIO = 0.5
+
+TRAIN_PART = 0.8
+TEST_PART = 0.2
 
 
 
@@ -20,13 +27,10 @@ def counts_to_relative_abundance(df):
 
 def extract_relevant_metadata(metadata_df):
     """Extracts relevant metadata for disease status."""
-    ret_metadata = metadata_df.fillna(-1)  # Fill missing values with -1
+    ret_metadata = metadata_df.copy()
     ret_metadata["disease_status"] = np.where(ret_metadata["PATGROUPFINAL_C"] == "8", 0, 1)  # Binary encoding of disease status
-
-    nhot_center = ret_metadata["CENTER_C"].str.get_dummies()
-    ret_metadata = pd.concat([ret_metadata, nhot_center], axis=1)
     
-    return ret_metadata.drop(columns=["CENTER_C", "PATGROUPFINAL_C", "SMOKE", "pa_work_2cl", "DDS"])
+    return ret_metadata["disease_status"]
 
 def root_to_leaf_length(tree):
     """Calculates the root-to-leaf length for a given tree."""
@@ -68,40 +72,56 @@ def sample_data_balanced(df_x, df_y, xy_ratio, n_samples, random_state=42):
 
     return pd.concat([x_sampled, y_sampled], axis=0)
 
+def train_model(train_df, target_column, random_state=42):
+    """Trains a Random Forest model."""
+    X_train = train_df.drop(columns=[target_column])
+    y_train = train_df[target_column]
+
+    model = RandomForestClassifier(n_estimators=200, random_state=random_state, n_jobs=-1, max_depth=5)
+    model.fit(X_train, y_train)
+    
+    return model
+
 
 if __name__ == "__main__":
     metadata_df, microbiome_df = read_data(".\\train")
     distance_matrix = pd.read_csv(".\\species_distance_matrix.csv", index_col=0)
     tree = Phylo.read(".\\species_upgma_tree.nwk", "newick")
 
-    rel_microbiome_df = counts_to_relative_abundance(microbiome_df)
-    relevant_metadata_df = extract_relevant_metadata(metadata_df)
+    seeds = random.sample(range(10000), 10)
+
+    rel_microbiome_df = counts_to_relative_abundance(microbiome_df[distance_matrix.columns.tolist()])
+    rel_microbiome_df["disease_status"] = extract_relevant_metadata(metadata_df)
+
+    naive_aupr_scores = []
+    for seed in seeds:
+        train, test = train_test_split(rel_microbiome_df, train_size=TRAIN_PART, random_state=seed)
+
+        test = sample_data_balanced(test[test["disease_status"] == 1],
+                                test[test["disease_status"] == 0], RATIO, NUM_SAMPLES, random_state=seed)
+        
+        naive_model = train_model(train, "disease_status", random_state=seed)
+
+        X_test = test.drop(columns=["disease_status"])
+        y_test = test["disease_status"]
+
+        test_probs = naive_model.predict_proba(X_test)[:, 1]
+        precision, recall, _ = precision_recall_curve(y_test, test_probs)
+        aupr = -np.trapezoid(precision, recall)
+        naive_aupr_scores.append(aupr)
+
+    print(f"Average of average precision scores without clustering: {np.mean(naive_aupr_scores):.4f}")
 
     length_thresholds = np.linspace(0, root_to_leaf_length(tree.clade), num=100)
     max_mean_score = 0.0
     best_threshold = 0.0
 
-    microbiome_model_data = rel_microbiome_df.join(relevant_metadata_df, how="inner")
 
-    microbiome_model_data = sample_data_balanced(microbiome_model_data[microbiome_model_data["disease_status"] == 0],
-                                                    microbiome_model_data[microbiome_model_data["disease_status"] == 1],
-                                                    xy_ratio=0.5, n_samples=5000, random_state=42)
-    
-    microbiome_naive_data = microbiome_model_data.copy()
+    engineered_aupr_scores = []
 
-    X = microbiome_naive_data.drop(columns=["disease_status"])
-    y = microbiome_naive_data["disease_status"]
-
-    rf_naive = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1, max_depth=5)
-
-    kf = KFold(n_splits=10, shuffle=True, random_state=42)
-
-    scores_model = cross_val_score(
-        rf_naive, X, y, cv=kf, scoring="average_precision", n_jobs=-1
-    )
-    print(f"Average of average precision scores without clustering: {scores_model.mean():.4f}")
 
     for threshold in length_thresholds:
+        microbiome_model_data = rel_microbiome_df.copy()
         groups = clades_below_threshold(tree.clade, threshold)
         
         for i, group in enumerate(groups):
@@ -109,23 +129,34 @@ if __name__ == "__main__":
             if len(cols_to_sum) > 1:
                 microbiome_model_data[f"cluster_{i}"] = microbiome_model_data[cols_to_sum].sum(axis=1)
                 microbiome_model_data = microbiome_model_data.drop(columns=cols_to_sum)
-        
 
-        X = microbiome_model_data.drop(columns=["disease_status"])
-        y = microbiome_model_data["disease_status"]
+        threshold_aupr_scores = []
 
-        rf_model = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1, max_depth=5)
+        for seed in seeds:
+            train, test = train_test_split(microbiome_model_data, train_size=TRAIN_PART, random_state=seed)
 
-        kf = KFold(n_splits=10, shuffle=True, random_state=42)
+            test = sample_data_balanced(test[test["disease_status"] == 1],
+                                    test[test["disease_status"] == 0], RATIO, NUM_SAMPLES, random_state=seed)
+            
+            engineered_model = train_model(train, "disease_status", random_state=seed)
 
-        scores_model = cross_val_score(
-            rf_model, X, y, cv=kf, scoring="average_precision", n_jobs=-1
-        )
+            X_test = test.drop(columns=["disease_status"])
+            y_test = test["disease_status"]
 
-        if scores_model.mean() > max_mean_score:
-            max_mean_score = scores_model.mean()
+            test_probs = engineered_model.predict_proba(X_test)[:, 1]
+            precision, recall, _ = precision_recall_curve(y_test, test_probs)
+            aupr = -np.trapezoid(precision, recall)
+            threshold_aupr_scores.append(aupr)
+
+        if np.mean(threshold_aupr_scores) > max_mean_score:
+            max_mean_score = np.mean(threshold_aupr_scores)
             best_threshold = threshold
 
-        print(f"Average of average precision scores for threshold {threshold:.4f}: {scores_model.mean():.4f}")
-
-    print(f"Best threshold: {best_threshold:.4f} with mean average precision: {max_mean_score:.4f}")
+        engineered_aupr_scores.append(np.mean(threshold_aupr_scores))
+    plt.figure(figsize=(10, 6))
+    plt.plot(length_thresholds, engineered_aupr_scores, marker='o', linestyle='-')
+    plt.title(f'Mean Average Precision vs. Clustering Threshold\nBest Threshold: {best_threshold:.4f}, Mean AP: {max_mean_score:.4f}\nAverage of average precision scores without clustering: {np.mean(naive_aupr_scores):.4f}')
+    plt.xlabel("Thresholds")
+    plt.ylabel('Mean Average Precision Score')
+    plt.grid(True)
+    plt.show()
