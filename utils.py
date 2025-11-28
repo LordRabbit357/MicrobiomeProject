@@ -10,6 +10,7 @@ from grakel import Graph
 from grakel.kernels import WeisfeilerLehman, VertexHistogram
 import networkx as nx
 import pickle
+import mantel
 
 
 PHYLUM_COLORS = {976: "blue", 1224: "orange", 1239: "green", 74201: "red", 200940: "purple", 201174: "brown"}
@@ -470,7 +471,7 @@ def render_tree(tree, annotations, save=True, output_file="colored_tree.png"):
         ts.legend.add_face(tf, column=0)
 
 
-    tree.show(tree_style=ts)
+    # tree.show(tree_style=ts)
     if save:
         tree.render(output_file, w=1200, tree_style=ts)
 
@@ -510,29 +511,56 @@ def kernel_to_distance(K):
     )
     return D
 
+def normalize_matrix(matrix):
+    """
+    Normalize a matrix to values between 0 and 1.
 
-def run_wl(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=None, file_prefix="wl"):
+    Parameters
+    ----------
+    matrix : array-like
+        2D list or NumPy array.
+
+    Returns
+    -------
+    np.ndarray
+        Normalized matrix with values in [0, 1].
+    """
+    matrix = np.asarray(matrix, dtype=float)
+    min_val = matrix.min()
+    max_val = matrix.max()
+
+    if max_val == min_val:
+        # Avoid division by zero: return zeros
+        return np.zeros_like(matrix)
+
+    return (matrix - min_val) / (max_val - min_val)
+
+
+def run_wl(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=None, prefix="wl"):
     species_to_graph = map_species_to_graph(species_to_strains, path_to_models=path_to_models, currency_metabolites=currency_metabolites, nodes_as_reactions=True, convert_to_grakel=True)
+    pickle.dump(species_to_graph, open(f"{prefix}_species_to_graph.pkl", "wb"))
+    species_to_graph = pickle.load(open(f"{prefix}_species_to_graph.pkl", "rb"))
 
     wl_distance_matrix = wl_graph_kernel_similarity(list(species_to_graph.values()))
     wl_distance_matrix = kernel_to_distance(wl_distance_matrix)
+    wl_distance_matrix = normalize_matrix(wl_distance_matrix)
     wl_distance_matrix = pd.DataFrame(wl_distance_matrix, index=species_to_graph.keys(), columns=species_to_graph.keys())
     
 
-    wl_distance_matrix.to_csv(f"{file_prefix}_distance_matrix.csv")
-    wl_distance_matrix = pd.read_csv(f"{file_prefix}_distance_matrix.csv", index_col=0)
+    wl_distance_matrix.to_csv(f"{prefix}_distance_matrix.csv")
+    wl_distance_matrix = pd.read_csv(f"{prefix}_distance_matrix.csv", index_col=0)
 
     
     print("Distance matrix computed, Building UPGMA tree...")
     newick_string = construct_tree_from_distance_matrix(wl_distance_matrix, wl_distance_matrix.index)
 
-    with open(f"{file_prefix}_upgma_tree.nwk", "w") as f:
+    with open(f"{prefix}_upgma_tree.nwk", "w") as f:
         f.write(newick_string)
 
-    tree = Tree(f"{file_prefix}_upgma_tree.nwk")
+    tree = Tree(f"{prefix}_upgma_tree.nwk")
 
     render_tree(tree, annotations={'\''+sp+'\'': PHYLUM_COLORS[get_phylum_taxid(species_to_ncbi["s__" +sp])] 
-                for sp in wl_distance_matrix.columns if "s__" +sp in species_to_ncbi}, save=True, output_file=f"{file_prefix}_colored_tree.png")
+                for sp in wl_distance_matrix.columns if "s__" +sp in species_to_ncbi}, save=True, output_file=f"{prefix}_colored_tree.png")
 
 def run_graph_intersection(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=None, prefix="graph_intersection"):
     species_to_graph = map_species_to_graph(species_to_strains, path_to_models=path_to_models, currency_metabolites=currency_metabolites, nodes_as_reactions=True)
@@ -542,6 +570,9 @@ def run_graph_intersection(species_to_strains, species_to_ncbi, path_to_models="
     for sp1, graph1 in species_to_graph.items():
         for sp2, graph2 in species_to_graph.items():
             distance_matrix.at[sp1, sp2] = 1- graph_intersection_index(graph1, graph2)
+
+    distance_matrix.to_csv(f"{prefix}_distance_matrix.csv")
+    distance_matrix = pd.read_csv(f"{prefix}_distance_matrix.csv", index_col=0)
 
     newick_string = construct_tree_from_distance_matrix(distance_matrix, distance_matrix.index)
 
@@ -553,13 +584,18 @@ def run_graph_intersection(species_to_strains, species_to_ncbi, path_to_models="
     render_tree(tree, annotations={'\''+sp+'\'': PHYLUM_COLORS[get_phylum_taxid(species_to_ncbi["s__" +sp])] 
                 for sp in distance_matrix.columns if "s__" +sp in species_to_ncbi}, save=True, output_file=f"{prefix}_colored_tree.png")
     
-def run_source_sink(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=None, prefix="graph_intersection"):
+def run_source_sink(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=None, prefix="source_sink"):
     species_to_graph = map_species_to_graph(species_to_strains, path_to_models=path_to_models, currency_metabolites=currency_metabolites, nodes_as_reactions=False)
+    pickle.dump(species_to_graph, open(f"{prefix}_species_to_graph.pkl", "wb"))
+    species_to_graph = pickle.load(open(f"{prefix}_species_to_graph.pkl", "rb"))
 
     distance_matrix = pd.DataFrame(index=species_to_graph.keys(), columns=species_to_graph.keys(), dtype=int)
     for sp1, graph1 in species_to_graph.items():
         for sp2, graph2 in species_to_graph.items():
             distance_matrix.at[sp1, sp2] = 1- source_sink_index(graph1, graph2)
+
+    distance_matrix.to_csv(f"{prefix}_distance_matrix.csv")
+    distance_matrix = pd.read_csv(f"{prefix}_distance_matrix.csv", index_col=0)
 
     newick_string = construct_tree_from_distance_matrix(distance_matrix, distance_matrix.index)
 
@@ -572,16 +608,16 @@ def run_source_sink(species_to_strains, species_to_ncbi, path_to_models="models/
                 for sp in distance_matrix.columns if "s__" +sp in species_to_ncbi}, save=True, output_file=f"{prefix}_colored_tree.png")
     
 def run_ged(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=None, prefix="ged"):
-    # species_to_graph = map_species_to_graph(species_to_strains, path_to_models=path_to_models, currency_metabolites=currency_metabolites, nodes_as_reactions=False)
+    species_to_graph = map_species_to_graph(species_to_strains, path_to_models=path_to_models, currency_metabolites=currency_metabolites, nodes_as_reactions=False)
 
-    # pickle.dump(species_to_graph, open(f"{prefix}_species_to_graph.pkl", "wb"))
+    pickle.dump(species_to_graph, open(f"{prefix}_species_to_graph.pkl", "wb"))
     species_to_graph = pickle.load(open(f"{prefix}_species_to_graph.pkl", "rb"))
 
     distance_matrix = pd.DataFrame(index=species_to_graph.keys(), columns=species_to_graph.keys(), dtype=int)
     for sp1, graph1 in species_to_graph.items():
         print(f"Computing distances for species: {sp1}")
         for sp2, graph2 in species_to_graph.items():
-            distance_matrix.at[sp1, sp2] = graph_edit_distance_labeled(graph1, graph2, timeout=10)
+            distance_matrix.at[sp1, sp2] = graph_edit_distance_labeled(graph1, graph2, timeout=2)
 
     newick_string = construct_tree_from_distance_matrix(distance_matrix, distance_matrix.index)
 
@@ -595,8 +631,8 @@ def run_ged(species_to_strains, species_to_ncbi, path_to_models="models/", curre
 
     
 if __name__ == "__main__":
-    # # Ignore all UserWarnings
-    # warnings.filterwarnings('ignore', category=UserWarning)
+    # Ignore all UserWarnings
+    warnings.filterwarnings('ignore', category=UserWarning)
     
     # metadata_path = "bac120_metadata_r207.tsv"
 
@@ -642,14 +678,48 @@ if __name__ == "__main__":
     }
 
     #run_jaccard(species_to_strains, species_to_ncbi)
-    #run_wl(species_to_strains, species_to_ncbi, path_to_models="models/")
-    #run_wl(species_to_strains, species_to_ncbi, currency_metabolites=currency_metabolites, file_prefix="wl_currency")
+    # run_wl(species_to_strains, species_to_ncbi, path_to_models="models/")
+    # run_wl(species_to_strains, species_to_ncbi, currency_metabolites=currency_metabolites, prefix="wl_currency")
     # run_graph_intersection(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=currency_metabolites, prefix="graph_intersection_currency")
     # run_graph_intersection(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=None, prefix="graph_intersection")
     # run_source_sink(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=None, prefix="source_sink")
     # run_source_sink(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=currency_metabolites, prefix="source_sink_currency")
-    run_ged(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=None, prefix="ged") # this might take up to 48 hours
-    run_ged(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=currency_metabolites, prefix="ged_currency") # this might take up to 48 hours
+    # run_ged(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=None, prefix="ged") # this might take up to 48 hours
+    # run_ged(species_to_strains, species_to_ncbi, path_to_models="models/", currency_metabolites=currency_metabolites, prefix="ged_currency") # this might take up to 48 hours
+
+    # ncbi = NCBITaxa()
+    # phylo_tree = ncbi.get_topology([species_to_ncbi["s__" + sp] for sp in species_to_strains.keys()])
+
+    # for leaf in phylo_tree.get_leaves():
+    #     taxid = int(leaf.name)
+    #     species_name = None
+    #     for sp, ncbi_id in species_to_ncbi.items():
+    #         if ncbi_id == taxid:
+    #             species_name = '\'' + sp[3:] + '\''
+    #             break
+    #     if species_name is not None:
+    #         leaf.name = species_name
+    #     else:
+    #         leaf.name = '\'' + str(taxid) + '\''
+
+    # phylo_tree.write(format=1, outfile="ncbi_phylo_tree.nwk")
+
+    
+
+    # render_tree(Tree("ncbi_phylo_tree.nwk"), annotations={'\''+sp+'\'': PHYLUM_COLORS[get_phylum_taxid(species_to_ncbi["s__" + sp])] 
+    #             for sp in species_to_strains.keys()}, save=True, output_file="ncbi_colored_tree.png")
+
+
+    distance_matrices_names = [n for n in Path(".").glob("*_distance_matrix.csv")]
+    mantel_matrix = pd.DataFrame(index=distance_matrices_names, columns=distance_matrices_names, dtype=float)
+    for mat1 in distance_matrices_names:
+        for mat2 in distance_matrices_names:
+            dm1 = pd.read_csv(mat1, index_col=0)
+            dm2 = pd.read_csv(mat2, index_col=0)
+            result = mantel.test(dm1.to_numpy(), dm2.to_numpy(), method='pearson', perms=10000, tail='two-tail')
+            mantel_matrix.loc[mat1, mat2] = result.r
+
+    mantel_matrix.to_csv("mantel_correlation_matrix.csv")
 
 
     
