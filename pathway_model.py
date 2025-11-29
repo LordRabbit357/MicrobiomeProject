@@ -1,3 +1,4 @@
+from pathlib import Path
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -8,8 +9,10 @@ import matplotlib.pyplot as plt
 from Bio import Phylo
 import math
 import random
+from ete3 import NCBITaxa
+from utils import build_species_to_ncbi_map, load_gtdb_metadata
 
-NUM_SAMPLES = 500
+NUM_SAMPLES = 1000
 RATIO = 0.5
 
 TRAIN_PART = 0.8
@@ -82,11 +85,34 @@ def train_model(train_df, target_column, random_state=42):
     
     return model
 
+def get_level_taxid(strain_taxid, level):
+    """
+    Given an NCBI TaxID,
+    return the corresponding level TaxID.
+    """
+    ncbi = NCBITaxa()
+    
+    # Get lineage of the taxon
+    try:
+        lineage = ncbi.get_lineage(strain_taxid)
+    except:
+        raise ValueError(f"Invalid TaxID: {strain_taxid}")
+    
+    # Get ranks of lineage nodes
+    ranks = ncbi.get_rank(lineage)  # {taxid: rank}
+    
+    # Find the species-level taxid
+    for taxid in lineage:
+        if ranks.get(taxid) == level:
+            return taxid
+    
+    # No species found in lineage
+    return None
+
 
 if __name__ == "__main__":
     metadata_df, microbiome_df = read_data(".\\train")
-    distance_matrix = pd.read_csv(".\\species_distance_matrix.csv", index_col=0)
-    tree = Phylo.read(".\\species_upgma_tree.nwk", "newick")
+    distance_matrix = pd.read_csv(".\\jaccard_distance_matrix.csv", index_col=0)
 
     seeds = random.sample(range(10000), 10)
 
@@ -107,56 +133,121 @@ if __name__ == "__main__":
 
         test_probs = naive_model.predict_proba(X_test)[:, 1]
         precision, recall, _ = precision_recall_curve(y_test, test_probs)
-        aupr = -np.trapezoid(precision, recall)
+        aupr = -np.trapz(precision, recall)
         naive_aupr_scores.append(aupr)
 
     print(f"Average of average precision scores without clustering: {np.mean(naive_aupr_scores):.4f}")
 
-    length_thresholds = np.linspace(0, root_to_leaf_length(tree.clade), num=100)
-    max_mean_score = 0.0
-    best_threshold = 0.0
-
-
-    engineered_aupr_scores = []
-
-
-    for threshold in length_thresholds:
-        microbiome_model_data = rel_microbiome_df.copy()
-        groups = clades_below_threshold(tree.clade, threshold)
+    phylo_aupr_best_score = 0
+    phylo_aupr_best_lvl = 0
+    phylo_aupr_scores = []
+    levels = ["phylum", "class", "order", "family", "genus", "species"]
+    metadata_path = "bac120_metadata_r207.tsv"
+    metadata_df = load_gtdb_metadata(metadata_path)
+    sp_to_taxid = build_species_to_ncbi_map(metadata_df)
+    for lvl in range(len(levels)):
+        level = levels[lvl]
+        level_microbiome_df = rel_microbiome_df.copy()
+        groups = {}
+        for col in level_microbiome_df.columns:
+            if col == "disease_status":
+                continue
+            taxid = sp_to_taxid.get("s__" + col)
+            lowest_level = lvl
+            while get_level_taxid(taxid, level) is None and lowest_level > 0:
+                lowest_level -= 1
+            level_taxid = get_level_taxid(taxid, levels[lowest_level])
+            if level_taxid not in groups:
+                groups[level_taxid] = [col]
+            else:
+                groups[level_taxid].append(col)
         
-        for i, group in enumerate(groups):
-            cols_to_sum = [col for col in microbiome_model_data.columns if col in group]
-            if len(cols_to_sum) > 1:
-                microbiome_model_data[f"cluster_{i}"] = microbiome_model_data[cols_to_sum].sum(axis=1)
-                microbiome_model_data = microbiome_model_data.drop(columns=cols_to_sum)
-
-        threshold_aupr_scores = []
-
+        for taxaid, cols in groups.items():
+            if len(cols) > 1:
+                level_microbiome_df[f"{level}_{taxaid}"] = level_microbiome_df[cols].sum(axis=1)
+                level_microbiome_df = level_microbiome_df.drop(columns=cols)
+        
+        level_aupr_scores = []
         for seed in seeds:
-            train, test = train_test_split(microbiome_model_data, train_size=TRAIN_PART, random_state=seed)
+            train, test = train_test_split(level_microbiome_df, train_size=TRAIN_PART, random_state=seed)
 
             test = sample_data_balanced(test[test["disease_status"] == 1],
                                     test[test["disease_status"] == 0], RATIO, NUM_SAMPLES, random_state=seed)
             
-            engineered_model = train_model(train, "disease_status", random_state=seed)
+            level_model = train_model(train, "disease_status", random_state=seed)
 
             X_test = test.drop(columns=["disease_status"])
             y_test = test["disease_status"]
 
-            test_probs = engineered_model.predict_proba(X_test)[:, 1]
+            test_probs = level_model.predict_proba(X_test)[:, 1]
             precision, recall, _ = precision_recall_curve(y_test, test_probs)
-            aupr = -np.trapezoid(precision, recall)
-            threshold_aupr_scores.append(aupr)
-
-        if np.mean(threshold_aupr_scores) > max_mean_score:
-            max_mean_score = np.mean(threshold_aupr_scores)
-            best_threshold = threshold
-
-        engineered_aupr_scores.append(np.mean(threshold_aupr_scores))
-    plt.figure(figsize=(10, 6))
-    plt.plot(length_thresholds, engineered_aupr_scores, marker='o', linestyle='-')
-    plt.title(f'Mean Average Precision vs. Clustering Threshold\nBest Threshold: {best_threshold:.4f}, Mean AP: {max_mean_score:.4f}\nAverage of average precision scores without clustering: {np.mean(naive_aupr_scores):.4f}')
-    plt.xlabel("Thresholds")
+            aupr = -np.trapz(precision, recall)
+            level_aupr_scores.append(aupr)
+        
+        if np.mean(level_aupr_scores) > phylo_aupr_best_score:
+            phylo_aupr_best_score = np.mean(level_aupr_scores)
+            phylo_aupr_best_lvl = lvl
+        phylo_aupr_scores.append(np.mean(level_aupr_scores))
+        
+    plt.figure(figsize=(20, 12))
+    plt.plot(levels, phylo_aupr_scores, marker='o', linestyle='-')
+    plt.title(f'Mean Average Precision vs. Clustering Threshold using phylogenetic tree\nBest level: {levels[phylo_aupr_best_lvl]}, Mean AP: {phylo_aupr_best_score:.4f}\nAverage precision scores without clustering: {np.mean(naive_aupr_scores):.4f}')
+    plt.xlabel("Levels")
     plt.ylabel('Mean Average Precision Score')
     plt.grid(True)
-    plt.show()
+    plt.savefig(f'misc/phylo_levels_graph.png')
+    plt.close()
+
+
+    tree_names = [n for n in Path(".").glob("*upgma_tree.nwk")]
+    trees = [Phylo.read(str(tree_name), "newick") for tree_name in tree_names]
+
+
+    for i in range(len(trees)):
+        tree = trees[i]
+        length_thresholds = np.linspace(0, root_to_leaf_length(tree.clade), num=100)
+        engineered_aupr_scores = []
+        max_mean_score = 0.0
+        best_threshold = 0.0
+        for threshold in length_thresholds:
+            microbiome_model_data = rel_microbiome_df.copy()
+            groups = clades_below_threshold(tree.clade, threshold)
+            
+            for j, group in enumerate(groups):
+                cols_to_sum = [col for col in microbiome_model_data.columns if col in group]
+                if len(cols_to_sum) > 1:
+                    microbiome_model_data[f"cluster_{j}"] = microbiome_model_data[cols_to_sum].sum(axis=1)
+                    microbiome_model_data = microbiome_model_data.drop(columns=cols_to_sum)
+
+            threshold_aupr_scores = []
+
+            for seed in seeds:
+                train, test = train_test_split(microbiome_model_data, train_size=TRAIN_PART, random_state=seed)
+
+                test = sample_data_balanced(test[test["disease_status"] == 1],
+                                        test[test["disease_status"] == 0], RATIO, NUM_SAMPLES, random_state=seed)
+                
+                engineered_model = train_model(train, "disease_status", random_state=seed)
+
+                X_test = test.drop(columns=["disease_status"])
+                y_test = test["disease_status"]
+
+                test_probs = engineered_model.predict_proba(X_test)[:, 1]
+                precision, recall, _ = precision_recall_curve(y_test, test_probs)
+                aupr = -np.trapz(precision, recall)
+                threshold_aupr_scores.append(aupr)
+
+            if np.mean(threshold_aupr_scores) > max_mean_score:
+                max_mean_score = np.mean(threshold_aupr_scores)
+                best_threshold = threshold
+
+            engineered_aupr_scores.append(np.mean(threshold_aupr_scores))
+        print(f"finished tree {i+1} ({tree_names[i].stem[:-11]}) out of {len(trees)}")
+        plt.figure(figsize=(20, 12))
+        plt.plot(length_thresholds, engineered_aupr_scores, marker='o', linestyle='-')
+        plt.title(f'Mean Average Precision vs. Clustering Threshold using {tree_names[i].stem[:-11]}\nBest Threshold: {best_threshold:.4f}, Mean AP: {max_mean_score:.4f}\nAverage precision scores without clustering: {np.mean(naive_aupr_scores):.4f}\nBest average precision scores with phylo clustering: {phylo_aupr_best_score:.4f}')
+        plt.xlabel("Thresholds")
+        plt.ylabel('Mean Average Precision Score')
+        plt.grid(True)
+        plt.savefig(f'misc/{tree_names[i].stem[:-11]}_graph.png')
+        plt.close()

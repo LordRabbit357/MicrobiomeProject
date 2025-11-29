@@ -628,6 +628,17 @@ def run_ged(species_to_strains, species_to_ncbi, path_to_models="models/", curre
 
     render_tree(tree, annotations={'\''+sp+'\'': PHYLUM_COLORS[get_phylum_taxid(species_to_ncbi["s__" +sp])] 
                 for sp in distance_matrix.columns if "s__" +sp in species_to_ncbi}, save=True, output_file=f"{prefix}_colored_tree.png")
+    
+def get_equivalent_phylo_leaf_name(sp, species_to_ncbi, phylo_tree):
+    if sp in phylo_tree.get_leaf_names():
+        corresponding_leaf_name = '\'' + sp + '\''
+    else:
+        taxid = species_to_ncbi["s__" + sp]
+        for leaf in phylo_tree.get_leaves():
+            if species_to_ncbi["s__" + leaf.name.replace("'", "")] == taxid:
+                corresponding_leaf_name = leaf.name
+                break
+    return corresponding_leaf_name
 
     
 if __name__ == "__main__":
@@ -708,6 +719,25 @@ if __name__ == "__main__":
 
     # render_tree(Tree("ncbi_phylo_tree.nwk"), annotations={'\''+sp+'\'': PHYLUM_COLORS[get_phylum_taxid(species_to_ncbi["s__" + sp])] 
     #             for sp in species_to_strains.keys()}, save=True, output_file="ncbi_colored_tree.png")
+
+    phylo_tree = Tree("ncbi_phylo_tree.nwk")
+    phylo_tree_distance_matrix = pd.DataFrame(index=species_to_strains.keys(), columns=species_to_strains.keys(), dtype=float)
+    for sp1 in species_to_strains.keys():
+        corresponding_leaf1_name = get_equivalent_phylo_leaf_name(sp1, species_to_ncbi, phylo_tree)
+        for sp2 in species_to_strains.keys():
+            corresponding_leaf2_name = get_equivalent_phylo_leaf_name(sp2, species_to_ncbi, phylo_tree)
+            node1 = phylo_tree.search_nodes(name=corresponding_leaf1_name)[0]
+            node2 = phylo_tree.search_nodes(name=corresponding_leaf2_name)[0]
+            distance = phylo_tree.get_distance(node1, node2)
+            phylo_tree_distance_matrix.at[sp1, sp2] = distance
+
+    phylo_tree_distance_matrix.to_csv("ncbi_phylo_tree_distance_matrix.csv")
+    
+    phylo_tree_upgma = construct_tree_from_distance_matrix(phylo_tree_distance_matrix, phylo_tree_distance_matrix.index)
+    with open("ncbi_phylo_tree_upgma.nwk", "w") as f:
+        f.write(phylo_tree_upgma)
+    render_tree(Tree("ncbi_phylo_tree_upgma.nwk"), annotations={'\''+sp+'\'': PHYLUM_COLORS[get_phylum_taxid(species_to_ncbi["s__" + sp])] 
+                for sp in phylo_tree_distance_matrix.columns if "s__" +sp in species_to_ncbi}, save=True, output_file="ncbi_phylo_tree_upgma_colored.png")
 
 
     distance_matrices_names = [n for n in Path(".").glob("*_distance_matrix.csv")]
