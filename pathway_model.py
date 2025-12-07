@@ -13,7 +13,7 @@ from ete3 import NCBITaxa
 from utils import build_species_to_ncbi_map, load_gtdb_metadata
 
 NUM_SAMPLES = 1000
-RATIO = 0.5
+RATIO = 0.1
 
 TRAIN_PART = 0.8
 TEST_PART = 0.2
@@ -202,6 +202,10 @@ if __name__ == "__main__":
     tree_names = [n for n in Path(".").glob("*upgma_tree.nwk")]
     trees = [Phylo.read(str(tree_name), "newick") for tree_name in tree_names]
 
+    best_overall_tree = -1
+    best_overall_score = -1
+    best_overall_threshold = -1
+    best_overall_seed = -1
 
     for i in range(len(trees)):
         tree = trees[i]
@@ -236,6 +240,11 @@ if __name__ == "__main__":
                 precision, recall, _ = precision_recall_curve(y_test, test_probs)
                 aupr = -np.trapz(precision, recall)
                 threshold_aupr_scores.append(aupr)
+                if aupr > best_overall_score:
+                    best_overall_score = aupr
+                    best_overall_tree = i
+                    best_overall_threshold = threshold
+                    best_overall_seed = seed
 
             if np.mean(threshold_aupr_scores) > max_mean_score:
                 max_mean_score = np.mean(threshold_aupr_scores)
@@ -251,3 +260,33 @@ if __name__ == "__main__":
         plt.grid(True)
         plt.savefig(f'misc/{tree_names[i].stem[:-11]}_graph.png')
         plt.close()
+
+
+    print(f"Best tree was {tree_names[best_overall_tree]} with threshold {best_overall_threshold} and seed {best_overall_seed}. Score: {best_overall_score}")
+    microbiome_model_data = rel_microbiome_df.copy()
+    groups = clades_below_threshold(trees[best_overall_tree].clade, best_overall_threshold)
+        
+    for j, group in enumerate(groups):
+        cols_to_sum = [col for col in microbiome_model_data.columns if col in group]
+        if len(cols_to_sum) > 1:
+            microbiome_model_data[f"cluster_{j}"] = microbiome_model_data[cols_to_sum].sum(axis=1)
+            microbiome_model_data = microbiome_model_data.drop(columns=cols_to_sum)
+
+    best_model_tm = train_model(microbiome_model_data, "disease_status", random_state=best_overall_seed)
+
+    test_df = pd.read_csv(".\\test\\microbiome.csv").set_index("SampleID")
+    test_df = counts_to_relative_abundance(test_df[distance_matrix.columns.tolist()])
+
+    for j, group in enumerate(groups):
+        cols_to_sum = [col for col in test_df.columns if col in group]
+        if len(cols_to_sum) > 1:
+            test_df[f"cluster_{j}"] = test_df[cols_to_sum].sum(axis=1)
+            test_df = test_df.drop(columns=cols_to_sum)
+
+    test_df["predictions"] = best_model_tm.predict_proba(test_df)[:, 1]
+
+    test_df.to_csv("test_predictions.csv")
+
+
+        
+
